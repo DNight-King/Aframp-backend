@@ -117,7 +117,7 @@ Never use floating-point arithmetic to accumulate balances — convert for displ
 ## Endpoints
 
 ### `GET /health`
-Liveness probe. No auth. Returns `204 No Content` with an empty body.
+Liveness probe. No auth. Returns `200` with `{"status": "ok", "version": "<crate version>"}`.
 
 ### `GET /`
 Returns the literal string `aframp` (not JSON). Useful as a smoke test.
