@@ -114,6 +114,15 @@ Never use floating-point arithmetic to accumulate balances — convert for displ
 
 ---
 
+## Pagination
+
+`GET /transactions`, `GET /payment-requests` and `GET /withdrawals` return
+`{ "data": [...], "next_cursor": "<token>" | null }`, newest first. To get the
+next page, repeat the request with `?cursor=<next_cursor>` (same `limit`);
+`next_cursor` is `null` on the last page. The cursor is an opaque token — don't
+parse or build it. Pages are keyed on `(created_at, id)`, so rows created while
+you page never shift or repeat later pages. A malformed cursor returns `400`.
+
 ## Endpoints
 
 ### `GET /health`
@@ -263,11 +272,9 @@ Errors: `400 "create a wallet before generating payment requests"` if the mercha
 ### `GET /payment-requests`
 Auth required. The merchant's own requests, **newest first**. Scoped to the authenticated merchant — you cannot see another merchant's requests.
 
-Query: `?limit=` (default 50, clamped 1–200).
+Query: `?limit=` (default 50, clamped 1–200) and `?cursor=` (see [Pagination](#pagination)).
 
-`200` → array of the object above.
-
-> Pagination is limit-only — there's no cursor or offset, so you can't page beyond the most recent 200.
+`200` → `{ "data": [ …objects above… ], "next_cursor": "…" | null }`.
 
 ### `GET /payment-requests/{id}`
 **No auth** — deliberately public, so a customer's device can read a request before paying.
@@ -305,7 +312,7 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 `available` is withdrawable; `pending` is detected but not yet confirmed. In practice `pending` is almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet).
 
 ### `GET /transactions`
-Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200).
+Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200) and `?cursor=` (see [Pagination](#pagination)). The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:
 
 `200` →
 ```json
@@ -354,9 +361,9 @@ Validation errors (`400`): `"insufficient available balance"`, `"withdrawals are
 > **Payouts do not currently complete.** The Paystack integration is real and correct, but Aframp's Paystack balance is unfunded, so live calls return `502` with *"Your balance is not enough to fulfil this request."* On failure the balance is **automatically refunded** and the withdrawal is recorded with `status: "failed"` and a `failure_reason` — no money or ledger record is lost. Treat `502` as "try later," not as data loss. Paystack's own minimum transfer is ₦50 = `500000000` stroops.
 
 ### `GET /withdrawals`
-Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200).
+Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200) and `?cursor=` (see [Pagination](#pagination)).
 
-`200` →
+`200` → a page, `{ "data": [...], "next_cursor": ... }`, with `data` items like:
 ```json
 [
   {
@@ -413,7 +420,6 @@ Worth knowing before you design around them:
 - **No refresh tokens.** A 24h expiry means a re-login, not a silent refresh.
 - **No token revocation.** `POST /logout` clears the browser's cookie; it cannot invalidate a JWT that has already been copied somewhere else.
 - **No rate limiting on the password check itself.** OTP sends are throttled (60s cooldown, 5/hour per phone), but nothing yet stops repeated wrong-password guesses against `/login` before it ever gets to that step.
-- **No cursor pagination.** `limit` only, capped at 200.
 - **No cancel/delete on payment requests.** They can only expire naturally.
 - **No `PATCH`/`DELETE` anywhere** — and CORS only allows `GET`/`POST`, so adding one needs a server change too.
 - **cNGN QR codes**, pending a real issuer address.

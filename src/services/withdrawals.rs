@@ -281,6 +281,34 @@ pub async fn reconcile_withdrawal_status(
     Ok(Some(updated))
 }
 
+/// Keyset-paginated withdrawals, newest first. Fetches `limit + 1` rows so
+/// `Page::new` can tell whether another page follows; pass the previous
+/// page's last `(created_at, id)` as `cursor` to continue. Rows inserted while
+/// a client is paging land before the cursor and can't shift later pages.
+pub async fn withdrawals_by_merchant_cursor(
+    db: &PgPool,
+    merchant_id: Uuid,
+    limit: i64,
+    cursor: Option<crate::pagination::Cursor>,
+) -> Result<Vec<Withdrawal>, sqlx::Error> {
+    sqlx::query_as::<_, Withdrawal>(
+        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                provider_reference, bank_code, account_number, failure_reason,
+                idempotency_key, created_at, updated_at
+           FROM withdrawals
+          WHERE merchant_id = $1
+            AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+          ORDER BY created_at DESC, id DESC
+          LIMIT $4",
+    )
+    .bind(merchant_id)
+    .bind(cursor.map(|c| c.created_at))
+    .bind(cursor.map(|c| c.id))
+    .bind(limit + 1)
+    .fetch_all(db)
+    .await
+}
+
 pub async fn withdrawals_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,

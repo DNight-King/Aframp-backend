@@ -254,14 +254,23 @@ paths:
       description: Newest first, scoped to the authenticated merchant.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: Payment requests
+          description: Payment requests, newest first
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/PaymentRequest' }
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PaymentRequest' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -309,14 +318,23 @@ paths:
       summary: Detected incoming payments
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: Payments
+          description: Payments, newest first
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Payment' }
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Payment' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -355,14 +373,23 @@ paths:
       summary: List withdrawals
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: Withdrawals
+          description: Withdrawals, newest first
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Withdrawal' }
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Withdrawal' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -391,6 +418,15 @@ components:
       required: false
       description: Max rows to return. Clamped server-side to 1-200.
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >
+        Opaque token from the previous page's `next_cursor`. Pages are keyed
+        on (created_at, id), so rows created while paging never shift or
+        repeat later pages. An invalid cursor returns 400.
+      schema: { type: string }
 
   responses:
     BadRequest:
