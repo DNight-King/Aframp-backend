@@ -52,9 +52,32 @@ cargo run
 
 ## Running tests
 
+Integration tests (everything under `tests/`) need a dedicated Postgres
+database. They **fail** — they do not skip — when it isn't configured, so a
+green run always means the tests actually ran.
+
 ```bash
 docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;"
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test cargo test
+```
+
+### Required environment variables
+
+| Variable | Required for | Notes |
+|----------|--------------|-------|
+| `TEST_DATABASE_URL` | All integration tests in `tests/` | Must point at a database you don't mind being written to. Migrations are applied automatically by the test helper (`tests/common/mod.rs`) — don't apply them by hand with `psql`, or the helper's migration run will fail on already-existing tables. |
+
+Everything else the tests need (JWT/webhook/OTP secrets, the wallet
+encryption key, the payment and OTP providers) is hard-coded to test values
+or mocks inside `tests/common/mod.rs`, so no other variables are required to
+run `cargo test` locally.
+
+If `TEST_DATABASE_URL` is missing or unreachable, every integration test —
+and the `tests/db_canary.rs` canary — fails with a message pointing back
+here. To run only the unit tests without a database:
+
+```bash
+cargo test --lib
 ```
 
 ## Questions?

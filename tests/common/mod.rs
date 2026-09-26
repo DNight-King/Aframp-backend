@@ -1,3 +1,6 @@
+// Each test binary only uses a subset of these helpers.
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -12,17 +15,42 @@ use tower::ServiceExt;
 static MIGRATION_LOCK: Mutex<()> = Mutex::new(());
 static MIGRATED: AtomicBool = AtomicBool::new(false);
 
-pub async fn state() -> Option<AppState> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        return None;
-    };
-    let db = match PgPoolOptions::new().max_connections(5).connect(&url).await {
-        Ok(pool) => pool,
-        Err(err) => {
-            eprintln!("TEST_DATABASE_URL could not be reached: {err}");
-            return None;
+/// Why the integration-test database couldn't be set up. Returned instead of
+/// silently skipping, so a misconfigured run fails loudly rather than
+/// reporting a false green.
+#[derive(Debug)]
+pub enum TestDbError {
+    /// `TEST_DATABASE_URL` isn't set at all.
+    MissingUrl,
+    /// It's set, but the database couldn't be reached.
+    Unreachable(sqlx::Error),
+}
+
+impl std::fmt::Display for TestDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TestDbError::MissingUrl => write!(
+                f,
+                "TEST_DATABASE_URL is not set — integration tests need a dedicated Postgres \
+                 database (see CONTRIBUTING.md, \"Running tests\")"
+            ),
+            TestDbError::Unreachable(err) => {
+                write!(f, "TEST_DATABASE_URL is set but could not be reached: {err}")
+            }
         }
-    };
+    }
+}
+
+/// Connects to `TEST_DATABASE_URL`, runs migrations once per test binary, and
+/// builds an `AppState` wired to the mock providers. Returns an error rather
+/// than `None` so callers can't mistake "no database" for "nothing to test".
+pub async fn try_state() -> Result<AppState, TestDbError> {
+    let url = std::env::var("TEST_DATABASE_URL").map_err(|_| TestDbError::MissingUrl)?;
+    let db = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&url)
+        .await
+        .map_err(TestDbError::Unreachable)?;
 
     let _guard = MIGRATION_LOCK.lock().unwrap();
     if !MIGRATED.swap(true, Ordering::SeqCst) {
@@ -33,7 +61,7 @@ pub async fn state() -> Option<AppState> {
     }
     drop(_guard);
 
-    Some(AppState {
+    Ok(AppState {
         db,
         jwt_secret: aframp::SecretString::new("integration-test-secret".into()),
         webhook_secret: aframp::SecretString::new("integration-test-webhook".into()),
@@ -46,6 +74,12 @@ pub async fn state() -> Option<AppState> {
             same_site: aframp::SameSite::Lax,
         },
     })
+}
+
+/// [`try_state`], failing the calling test if the database isn't configured.
+/// Integration tests never skip: a run without a database is a failed run.
+pub async fn state() -> AppState {
+    try_state().await.unwrap_or_else(|err| panic!("{err}"))
 }
 
 pub async fn send(
