@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cors = CorsLayer::new()
         .allow_origin(origins)
         .allow_credentials(true)
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = router((*state).clone())

@@ -73,7 +73,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/logout", axum::routing::post(api::auth::logout))
         .route("/auth/refresh", axum::routing::post(api::auth::refresh))
         .route("/webhooks/termii", axum::routing::post(api::webhooks::termii))
-        .route("/me", axum::routing::get(api::me::get))
+        .route("/me", axum::routing::get(api::me::get).patch(api::me::update))
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))
         .route("/balance", axum::routing::get(api::balances::get))

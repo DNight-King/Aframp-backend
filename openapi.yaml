@@ -208,6 +208,48 @@ paths:
               schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Auth]
+      summary: Update the signed-in user's name and/or phone number
+      description: >
+        A new name applies immediately. A new phone number is not switched
+        right away: an OTP is sent to it and the response carries
+        `phone_verification`; completing `POST /verify-otp` with that
+        challenge moves the account to the new number (same flow as signup).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 100 }
+                phone_number: { type: string, description: Nigerian number in any common form }
+      responses:
+        '200':
+          description: Name updated and/or phone verification started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  phone_number: { type: string, nullable: true, description: The number on file (unchanged until verified) }
+                  phone_verification:
+                    nullable: true
+                    allOf: [{ $ref: '#/components/schemas/OtpChallengeResponse' }]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The phone number belongs to another account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '429':
+          description: Too many OTP sends to that number; try again shortly
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
 
   /wallet/create:
     post:

@@ -46,6 +46,9 @@ pub enum OtpError {
 pub enum VerifiedOutcome {
     Login(User),
     Signup(User, Merchant),
+    /// A `phone_change` challenge was verified; the user's phone number has
+    /// been switched to the newly verified one.
+    PhoneChanged(User),
 }
 
 pub async fn start_signup_challenge(
@@ -87,6 +90,44 @@ pub async fn start_signup_challenge(
     .await?;
 
     send_code(otp, phone_number, &code).await?;
+    Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
+}
+
+/// Sends a code to `new_phone` to prove the user controls it before
+/// `PATCH /me` switches their number (the same OTP flow as signup). The
+/// number isn't changed until the challenge is verified via `/verify-otp`.
+pub async fn start_phone_change_challenge(
+    db: &PgPool,
+    otp: &dyn OtpProvider,
+    hmac_secret: &str,
+    user_id: Uuid,
+    new_phone: &str,
+) -> Result<OtpChallengeResponse, OtpError> {
+    let phone_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1 AND id <> $2)")
+            .bind(new_phone)
+            .bind(user_id)
+            .fetch_one(db)
+            .await?;
+    if phone_taken {
+        return Err(OtpError::PhoneTaken);
+    }
+
+    let (challenge_id, code) = upsert_challenge(
+        db,
+        hmac_secret,
+        NewChallenge {
+            purpose: "phone_change",
+            user_id: Some(user_id),
+            pending_email: None,
+            pending_password_hash: None,
+            pending_name: None,
+            phone_number: new_phone,
+        },
+    )
+    .await?;
+
+    send_code(otp, new_phone, &code).await?;
     Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
 }
 
@@ -165,6 +206,27 @@ pub async fn verify(
             .await?
             .ok_or(OtpError::ChallengeNotFound)?;
         return Ok(VerifiedOutcome::Login(user));
+    }
+
+    if challenge.purpose == "phone_change" {
+        let user_id = challenge
+            .user_id
+            .expect("phone_change challenge always carries user_id — enforced by the migration's CHECK constraint");
+        let user = sqlx::query_as::<_, User>(
+            "UPDATE users SET phone_number = $2, phone_verified = true, updated_at = now()
+              WHERE id = $1
+              RETURNING id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at",
+        )
+        .bind(user_id)
+        .bind(&challenge.phone_number)
+        .fetch_optional(db)
+        .await
+        .map_err(|err| match users::unique_violation_field(&err) {
+            Some("users_phone_number_key") => OtpError::PhoneTaken,
+            _ => OtpError::Database(err),
+        })?
+        .ok_or(OtpError::ChallengeNotFound)?;
+        return Ok(VerifiedOutcome::PhoneChanged(user));
     }
 
     // purpose == "signup": this is the only place a signup ever actually

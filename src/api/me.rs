@@ -1,13 +1,18 @@
 use axum::extract::State;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{internal, not_found, ApiResult, ErrorCode};
+use crate::error::{
+    bad_request, bad_request_field, conflict, internal, not_found, too_many_requests, ApiResult, ErrorCode,
+};
+use crate::models::OtpChallengeResponse;
+use crate::services::otp::{self, OtpError};
 use crate::services::users;
+use crate::validation::{normalize_ng_phone_number, validate_name};
 use crate::AppState;
 
 /// The authenticated merchant's own profile. The JWT only carries ids, so a
@@ -102,5 +107,90 @@ pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Jso
         merchant_name: merchant.map(|m| m.name),
         wallet,
         balances,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateMeRequest {
+    pub name: Option<String>,
+    pub phone_number: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct UpdateMeResponse {
+    pub name: String,
+    /// The number on file. A requested change only lands here after the
+    /// code sent to the new number is verified via `POST /verify-otp`.
+    pub phone_number: Option<String>,
+    /// Present when a phone change was requested: verify it with
+    /// `POST /verify-otp` using this `challenge_id` and the SMS code.
+    pub phone_verification: Option<OtpChallengeResponse>,
+}
+
+/// Updates the signed-in user's profile. A new name applies immediately; a
+/// new phone number is only switched after it's verified by OTP, exactly
+/// like signup, so an account can't be pointed at a number its owner
+/// doesn't control.
+pub async fn update(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(req): Json<UpdateMeRequest>,
+) -> ApiResult<Json<UpdateMeResponse>> {
+    if req.name.is_none() && req.phone_number.is_none() {
+        return Err(bad_request(ErrorCode::InvalidParameters, "provide name and/or phone_number"));
+    }
+    let name = req
+        .name
+        .as_deref()
+        .map(validate_name)
+        .transpose()
+        .map_err(|msg| bad_request_field("name", msg))?;
+    let new_phone = req
+        .phone_number
+        .as_deref()
+        .map(normalize_ng_phone_number)
+        .transpose()
+        .map_err(|msg| bad_request_field("phone_number", msg))?;
+
+    let mut user = users::user_by_id(&state.db, auth.user_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(ErrorCode::UserNotFound, "user not found"))?;
+
+    if let Some(name) = name {
+        sqlx::query("UPDATE users SET name = $2, updated_at = now() WHERE id = $1")
+            .bind(user.id)
+            .bind(&name)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
+        user.name = name;
+    }
+
+    let phone_verification = match new_phone {
+        Some(phone) if user.phone_number.as_deref() != Some(phone.as_str()) => Some(
+            otp::start_phone_change_challenge(
+                &state.db,
+                state.otp_provider.as_ref(),
+                state.otp_hmac_secret.as_str(),
+                user.id,
+                &phone,
+            )
+            .await
+            .map_err(|err| match err {
+                OtpError::PhoneTaken => conflict(ErrorCode::PhoneTaken, "phone number already registered"),
+                OtpError::RateLimited => {
+                    too_many_requests(ErrorCode::TooManyRequests, "too many requests, please try again shortly")
+                }
+                other => internal(other),
+            })?,
+        ),
+        _ => None,
+    };
+
+    Ok(Json(UpdateMeResponse {
+        name: user.name,
+        phone_number: user.phone_number,
+        phone_verification,
     }))
 }

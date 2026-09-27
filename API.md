@@ -206,6 +206,11 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
 
 ---
 
+### `PATCH /me`
+Auth required. Body: `{ "name"?: string, "phone_number"?: string }` (at least one). A new `name` (trimmed, 1–100 characters) applies immediately. A new `phone_number` (any common Nigerian format, normalized to `+234…`) is **not** switched yet: an OTP is sent to it and the response includes `phone_verification: { challenge_id, expires_in_secs }`. Complete it with `POST /verify-otp` (as at signup) to move the account to the new number.
+
+`200` → `{ "name": "...", "phone_number": "<number on file>", "phone_verification": null | {...} }`. `400` with `field` for invalid input, `409` if the number belongs to another account, `429` if OTP sends to that number are rate limited.
+
 ### `POST /wallet/create`
 Auth required. Generates a **real Stellar ed25519 keypair** for the merchant. The private key is AES-256-GCM encrypted server-side and never leaves it.
 
@@ -424,6 +429,5 @@ Worth knowing before you design around them:
 - **No token revocation.** `POST /logout` clears the browser's cookie; it cannot invalidate a JWT that has already been copied somewhere else.
 - **No rate limiting on the password check itself.** OTP sends are throttled (60s cooldown, 5/hour per phone), but nothing yet stops repeated wrong-password guesses against `/login` before it ever gets to that step.
 - **No cancel/delete on payment requests.** They can only expire naturally.
-- **No `PATCH`/`DELETE` anywhere** — and CORS only allows `GET`/`POST`, so adding one needs a server change too.
 - **cNGN QR codes**, pending a real issuer address.
 - **Completed payouts**, pending funding (see `PRD.md` §9.1).

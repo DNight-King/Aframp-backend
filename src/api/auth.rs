@@ -109,7 +109,7 @@ pub async fn verify_otp(
         .map_err(map_otp_error)?;
 
     let (user, merchant_id) = match outcome {
-        VerifiedOutcome::Login(user) => {
+        VerifiedOutcome::Login(user) | VerifiedOutcome::PhoneChanged(user) => {
             let merchant = users::merchant_by_user(&state.db, user.id).await.map_err(internal)?;
             (user, merchant.map(|m| m.id))
         }
