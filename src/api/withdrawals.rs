@@ -1,4 +1,5 @@
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::Json;
 
 use crate::auth::extractor::AuthUser;
@@ -12,6 +13,7 @@ use crate::AppState;
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
+    headers: HeaderMap,
     Json(req): Json<CreateWithdrawalRequest>,
 ) -> ApiResult<Json<Withdrawal>> {
     let merchant_id = auth
@@ -32,6 +34,12 @@ pub async fn create(
             "must be a 10-digit NUBAN account number",
         ));
     }
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_owned);
     let withdrawal = withdrawals::create_withdrawal(
         &state.db,
         state.payment_provider.as_ref(),
@@ -41,6 +49,7 @@ pub async fn create(
             asset: req.asset.unwrap_or_else(|| "cNGN".into()),
             bank_code: req.bank_code,
             account_number: req.account_number,
+            idempotency_key,
         },
     )
     .await
