@@ -34,12 +34,12 @@ Authorization: Bearer <token>
 
 The header takes precedence when both are present.
 
-Tokens are **HS256, valid for 24 hours** either way. Claims are `sub` (user id), `merchant_id`, `iat`, `exp`.
+Tokens are **HS256, valid for 24 hours** either way. Claims are `sub` (user id), `merchant_id`, `iat`, `exp`, and `orig_iat` (when the session was first issued, kept across refreshes).
 
 Two things worth building for up front:
 
 - **`merchant_id` is nullable.** `AuthResponse.merchant_id` and the JWT claim are both optional. Today signup always creates a merchant so it's always present, but the type allows `null` — an account without a merchant gets `400` from every merchant-scoped endpoint, not `401`. Don't assume non-null.
-- **Expiry is silent.** There's no refresh endpoint. When a token expires, calls start returning `401` with `{"error":"invalid or expired token","code":"INVALID_CREDENTIALS"}` — treat any `401` on a previously-working call as "send the user back to login."
+- **Refresh before expiry.** `POST /auth/refresh` swaps a still-valid token for a new 24h one, for up to 7 days from the original login. Once a token has expired (or the 7 days are up), calls return `401` with `{"error":"invalid or expired token","code":"INVALID_CREDENTIALS"}` — treat any `401` on a previously-working call as "send the user back to login."
 
 ### CORS
 
@@ -178,6 +178,9 @@ No auth. The **only** endpoint that ever issues a session, reached from either a
 …with the same `Set-Cookie: aframp_session=...` as before. For a signup challenge, the user and merchant are created transactionally at this exact moment, not before.
 
 Errors: `400` `OTP_INVALID` (wrong code — 5 wrong guesses and the challenge is dead, not just that attempt), `OTP_EXPIRED` (codes last 10 minutes), `OTP_LOCKED` (attempts exhausted — restart via `/signup` or `/login` for a new one). `404` `OTP_CHALLENGE_NOT_FOUND` for an unknown or already-consumed `challenge_id`.
+
+### `POST /auth/refresh`
+Auth required (bearer or session cookie; the token must not have expired). Returns a new token with the same body shape as `/verify-otp` and resets the session cookie. The new token expires 24h from now, but never more than 7 days after the original login; past that point this returns `401` ("session can no longer be refreshed; log in again"). Refresh doesn't revoke the old token — it stays valid until its own `exp`.
 
 ### `POST /logout`
 No auth — a browser holding an expired or malformed session still needs to clear it. Returns `204` and a `Set-Cookie` that expires `aframp_session` immediately.
@@ -417,7 +420,7 @@ Note step 3 needs no auth token, so a customer-facing payment page can use it di
 Worth knowing before you design around them:
 
 - **No websockets / SSE.** Payment status is poll-only.
-- **No refresh tokens.** A 24h expiry means a re-login, not a silent refresh.
+- **Sessions end after 7 days.** `POST /auth/refresh` extends a session up to 7 days from the original login; after that it's a re-login.
 - **No token revocation.** `POST /logout` clears the browser's cookie; it cannot invalidate a JWT that has already been copied somewhere else.
 - **No rate limiting on the password check itself.** OTP sends are throttled (60s cooldown, 5/hour per phone), but nothing yet stops repeated wrong-password guesses against `/login` before it ever gets to that step.
 - **No cancel/delete on payment requests.** They can only expire naturally.

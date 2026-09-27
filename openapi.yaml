@@ -171,6 +171,28 @@ paths:
               schema: { type: string }
               description: aframp_session with Max-Age=0
 
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a valid session token for a fresh one
+      description: >
+        Send the current, unexpired token (bearer or session cookie) to get a
+        new 24h token, also set as the session cookie. Refreshes keep the
+        original login time and stop 7 days after it (the new token never
+        expires later than that); after that, or once the token has expired,
+        log in again.
+      responses:
+        '200':
+          description: New session token
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with the new token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /me:
     get:
       tags: [Auth]
@@ -400,8 +422,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >
-        HS256, 24h expiry. No refresh endpoint — a 401 means re-login. For API
-        clients and scripts; browsers should use cookieAuth instead.
+        HS256, 24h expiry. Renew an unexpired token with POST /auth/refresh,
+        for up to 7 days from the original login; after that a 401 means
+        re-login. For API clients and scripts; browsers should use cookieAuth
+        instead.
     cookieAuth:
       type: apiKey
       in: cookie

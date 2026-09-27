@@ -593,3 +593,81 @@ async fn me_requires_a_valid_token() {
     let (status, _) = send(app.clone(), "GET", "/me", Some("not-a-real-token"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// Signs a token with the integration-test secret, bypassing the app, so
+/// tests can present tokens the server would never issue itself.
+fn forge_token(iat: i64, exp: i64, orig_iat: i64) -> String {
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &json!({
+            "sub": Uuid::new_v4(),
+            "merchant_id": null,
+            "is_admin": false,
+            "iat": iat,
+            "exp": exp,
+            "orig_iat": orig_iat,
+        }),
+        &jsonwebtoken::EncodingKey::from_secret(b"integration-test-secret"),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn refresh_issues_a_working_token() {
+    let Some(state) = common::state().await else {
+        return;
+    };
+    let app = aframp::router(state);
+    let (token, merchant_id) = common::ensure_merchant(&app, "refresh_ok").await;
+
+    let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "refresh failed: {body}");
+    assert_eq!(body["merchant_id"], merchant_id);
+    let refreshed = body["token"].as_str().unwrap();
+
+    let (status, me) = send(app.clone(), "GET", "/me", Some(refreshed), None).await;
+    assert_eq!(status, StatusCode::OK, "refreshed token rejected: {me}");
+}
+
+#[tokio::test]
+async fn refresh_after_logout_has_no_session_to_refresh() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let (token, _) = common::ensure_merchant(&app, "refresh_logout").await;
+    let cookie = format!("aframp_session={token}");
+
+    let (status, _, set_cookie) = send_with_cookie(app.clone(), "POST", "/logout", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(set_cookie.iter().any(|c| c.starts_with("aframp_session=;")), "logout clears the cookie");
+
+    // The browser now holds the cleared cookie, so there's nothing to refresh.
+    let (status, _, _) = send_with_cookie(app.clone(), "POST", "/auth/refresh", Some("aframp_session="), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn refresh_rejects_an_expired_token() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp();
+    let expired = forge_token(now - 2 * 86_400, now - 86_400, now - 2 * 86_400);
+
+    let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&expired), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn refresh_stops_after_the_seven_day_session_window() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp();
+    // Still unexpired, but the session started eight days ago.
+    let stale = forge_token(now - 3_600, now + 3_600, now - 8 * 86_400);
+
+    let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&stale), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body["error"].as_str().unwrap().contains("log in again"), "{body}");
+}

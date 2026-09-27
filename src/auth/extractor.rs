@@ -14,6 +14,22 @@ pub struct AuthUser {
     pub merchant_id: Option<uuid::Uuid>,
 }
 
+/// The verified claims of the presented session token (bearer or cookie),
+/// for handlers that need more than the user id — e.g. token refresh.
+#[derive(Debug)]
+pub struct Session(pub Claims);
+
+impl FromRequestParts<AppState> for Session {
+    type Rejection = (StatusCode, Json<ApiError>);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        authenticate(parts, state).map(Session)
+    }
+}
+
 /// Same session proof as [`AuthUser`], but additionally requires the `is_admin`
 /// JWT claim. The claim is baked in at login and not re-checked against the
 /// database, so revoking admin access takes up to [`jwt::TOKEN_TTL_HOURS`] to
