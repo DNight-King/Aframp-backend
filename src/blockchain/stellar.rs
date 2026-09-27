@@ -296,19 +296,45 @@ fn record_to_deposit(record: OperationRecord, address: &str) -> Option<DetectedD
 }
 
 /// Converts a Stellar decimal amount string (up to 7 fractional digits) to stroops.
+///
+/// Returns `Err` for:
+/// - Empty or whitespace-only strings
+/// - Negative amounts (e.g. `"-1.0"`) — a negative stroop count would corrupt
+///   the balance ledger if passed through to `balances::apply_delta`.
+/// - Values whose whole part overflows `i64` when multiplied by 10_000_000
+///   (the stroops conversion factor).
+/// - More than 7 fractional digits (Stellar only supports 7 decimal places).
 fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
-    let mut parts = amount.splitn(2, '.');
+    let trimmed = amount.trim();
+    if trimmed.is_empty() {
+        return Err(format!("invalid amount: {amount}"));
+    }
+
+    let mut parts = trimmed.splitn(2, '.');
     let whole = parts.next().unwrap_or("0");
     let frac = parts.next().unwrap_or("");
     if frac.len() > 7 {
         return Err(format!("unexpected precision in amount: {amount}"));
     }
     let frac_padded = format!("{frac:0<7}");
-    let whole_stroops: i64 = whole.parse().map_err(|_| format!("invalid amount: {amount}"))?;
+
+    // Parse the whole part as an unsigned 64-bit integer first so that a
+    // leading minus sign is rejected before the overflow-checked multiply.
+    let whole_val: u64 = whole
+        .parse()
+        .map_err(|_| format!("invalid amount: {amount}"))?;
     let frac_stroops: i64 = frac_padded
         .parse()
         .map_err(|_| format!("invalid amount: {amount}"))?;
-    Ok(whole_stroops * 10_000_000 + frac_stroops)
+
+    // Checked multiply: whole_val * 10_000_000 must fit in i64.
+    let whole_stroops: i64 = (whole_val as i64)
+        .checked_mul(10_000_000)
+        .ok_or_else(|| format!("amount overflows i64: {amount}"))?;
+
+    whole_stroops
+        .checked_add(frac_stroops)
+        .ok_or_else(|| format!("amount overflows i64: {amount}"))
 }
 
 #[cfg(test)]
@@ -522,5 +548,71 @@ mod tests {
         let rec = make_record("account_merge");
 
         assert!(record_to_deposit(rec, addr).is_none());
+    }
+
+    // --------------------------------------------------------------------------
+    // #1041 — parse_amount_to_stroops edge cases: overflow, negative, empty,
+    //          whitespace
+    // --------------------------------------------------------------------------
+
+    /// A whole-part value large enough to overflow i64 when multiplied by
+    /// 10_000_000 (the stroops factor).  i64::MAX / 10_000_000 ≈ 922_337_203,
+    /// so "922337204.0" is the smallest whole XLM value that overflows.
+    #[test]
+    fn parse_amount_overflow_returns_err() {
+        // 922_337_204 * 10_000_000 > i64::MAX — must not silently truncate.
+        assert!(
+            parse_amount_to_stroops("922337204.0").is_err(),
+            "overflow should return Err"
+        );
+
+        // Even larger values are also rejected.
+        assert!(
+            parse_amount_to_stroops("999999999999999999.0").is_err(),
+            "very large value should return Err"
+        );
+    }
+
+    /// Negative amounts (e.g. from a malformed Horizon response) must be
+    /// rejected — a negative stroop count would silently corrupt the balance
+    /// ledger if it slipped through.
+    #[test]
+    fn parse_amount_negative_returns_err() {
+        assert!(
+            parse_amount_to_stroops("-1.0").is_err(),
+            "negative amount should return Err"
+        );
+        assert!(
+            parse_amount_to_stroops("-0.0000001").is_err(),
+            "negative fractional amount should return Err"
+        );
+    }
+
+    /// An empty string is not a valid decimal and must be rejected rather than
+    /// interpreted as zero or panicking.
+    #[test]
+    fn parse_amount_empty_string_returns_err() {
+        assert!(
+            parse_amount_to_stroops("").is_err(),
+            "empty string should return Err"
+        );
+    }
+
+    /// Whitespace-only input must be rejected.  A real Horizon amount field
+    /// will never be blank, but a test or mocked response could be.
+    #[test]
+    fn parse_amount_whitespace_only_returns_err() {
+        assert!(
+            parse_amount_to_stroops("   ").is_err(),
+            "whitespace-only string should return Err"
+        );
+        assert!(
+            parse_amount_to_stroops("\t").is_err(),
+            "tab-only string should return Err"
+        );
+        assert!(
+            parse_amount_to_stroops("\n").is_err(),
+            "newline-only string should return Err"
+        );
     }
 }
