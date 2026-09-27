@@ -1,25 +1,15 @@
 use axum::extract::{Query, State};
 use axum::response::Html;
 use axum::Json;
-use serde::Deserialize;
 
 use crate::auth::extractor::AdminUser;
 use crate::error::{internal, ApiResult};
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
-    AdminWalletRow, AdminWithdrawalRow,
+    AdminWalletRow, AdminWithdrawalRow, ListParams,
 };
 use crate::services::admin;
 use crate::AppState;
-
-#[derive(Deserialize)]
-pub struct ListParams {
-    pub limit: Option<i64>,
-}
-
-fn limit(params: &ListParams) -> i64 {
-    params.limit.unwrap_or(100).clamp(1, 500)
-}
 
 pub async fn overview(
     State(state): State<AppState>,
@@ -34,7 +24,7 @@ pub async fn users(
     _admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AdminUserRow>>> {
-    let rows = admin::users(&state.db, limit(&params)).await.map_err(internal)?;
+    let rows = admin::users(&state.db, params.admin_limit()).await.map_err(internal)?;
     Ok(Json(rows))
 }
 
@@ -43,7 +33,7 @@ pub async fn merchants(
     _admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AdminMerchantRow>>> {
-    let rows = admin::merchants(&state.db, limit(&params)).await.map_err(internal)?;
+    let rows = admin::merchants(&state.db, params.admin_limit()).await.map_err(internal)?;
     Ok(Json(rows))
 }
 
@@ -52,7 +42,7 @@ pub async fn wallets(
     _admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AdminWalletRow>>> {
-    let rows = admin::wallets(&state.db, limit(&params)).await.map_err(internal)?;
+    let rows = admin::wallets(&state.db, params.admin_limit()).await.map_err(internal)?;
     Ok(Json(rows))
 }
 
@@ -61,7 +51,7 @@ pub async fn transactions(
     _admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AdminTransactionRow>>> {
-    let rows = admin::transactions(&state.db, limit(&params)).await.map_err(internal)?;
+    let rows = admin::transactions(&state.db, params.admin_limit()).await.map_err(internal)?;
     Ok(Json(rows))
 }
 
@@ -70,7 +60,7 @@ pub async fn withdrawals(
     _admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AdminWithdrawalRow>>> {
-    let rows = admin::withdrawals(&state.db, limit(&params)).await.map_err(internal)?;
+    let rows = admin::withdrawals(&state.db, params.admin_limit()).await.map_err(internal)?;
     Ok(Json(rows))
 }
 
@@ -79,7 +69,7 @@ pub async fn payment_requests(
     _admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Vec<AdminPaymentRequestRow>>> {
-    let rows = admin::payment_requests(&state.db, limit(&params))
+    let rows = admin::payment_requests(&state.db, params.admin_limit())
         .await
         .map_err(internal)?;
     Ok(Json(rows))

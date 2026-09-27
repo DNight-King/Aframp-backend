@@ -1,20 +1,13 @@
 use axum::extract::{Query, State};
 use axum::Json;
-use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
-use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
+use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
 use crate::pagination::{Cursor, Page};
 use crate::services::withdrawals::{self, WithdrawalError};
 use crate::validation::{is_valid_account_number, is_valid_bank_code};
 use crate::AppState;
-
-#[derive(Deserialize)]
-pub struct ListParams {
-    pub limit: Option<i64>,
-    pub cursor: Option<String>,
-}
 
 pub async fn create(
     State(state): State<AppState>,
@@ -63,7 +56,7 @@ pub async fn list(
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,

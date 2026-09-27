@@ -106,6 +106,16 @@ const toDisplay = (stroops) => (stroops / 10_000_000).toFixed(7);
 const toStroops = (amount) => Math.round(amount * 10_000_000);
 ```
 
+Conversion reference:
+
+| XLM | Stroops |
+|---|---|
+| 0.0000001 | 1 (minimum) |
+| 1.0000000 | 10,000,000 |
+| 2.5000000 | 25,000,000 |
+| 50.0000000 | 500,000,000 |
+| 100.0000000 | 1,000,000,000 |
+
 Never use floating-point arithmetic to accumulate balances — convert for display only.
 
 **Timestamps** are RFC 3339 / ISO 8601 UTC (`2026-08-13T14:15:34.520195Z`), parseable by `new Date()`.
@@ -404,6 +414,46 @@ async function waitForPayment(id, { signal } = {}) {
 Note step 3 needs no auth token, so a customer-facing payment page can use it directly.
 
 ---
+
+## Admin access
+
+Admin routes (`/admin/*`) require the `is_admin` flag on the user row. There is no self-service way to become an admin — set it directly in Postgres:
+
+```sql
+UPDATE users SET is_admin = true WHERE email = 'you@example.com';
+```
+
+The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** — outstanding tokens keep their original value for up to 24h. Then open `/admin` in a browser and sign in with that account.
+
+### Known limitation: OTP-enabled admin accounts
+
+The `/admin` dashboard's login form uses the old one-step `/login` flow. If the admin account has a `phone_number` set, `/login` now returns an OTP challenge instead of a session, and the dashboard has no code-entry step — it will appear to silently fail to log in.
+
+**Options:**
+
+1. **Keep the admin account phone-less.** An account without a `phone_number` still goes through the legacy single-step `/login` path. This is the simplest workaround today.
+
+2. **Use `curl` / Postman to drive the two-step flow and paste the cookie manually:**
+
+   ```bash
+   # Step 1 — get the challenge id
+   CHALLENGE=$(curl -sS -X POST http://127.0.0.1:3000/login \
+     -H "Content-Type: application/json" \
+     -d '{"email":"admin@example.com","password":"your-password"}' \
+     | python3 -c "import sys,json; print(json.load(sys.stdin)['challenge_id'])")
+
+   # Step 2 — read the OTP from cargo run output (OTP_PROVIDER=mock) or SMS, then verify
+   TOKEN=$(curl -sS -X POST http://127.0.0.1:3000/verify-otp \
+     -H "Content-Type: application/json" \
+     -d "{\"challenge_id\":\"$CHALLENGE\",\"code\":\"YOUR_OTP_CODE\"}" \
+     | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+   echo "Token: $TOKEN"
+   # Use as: curl ... -H "Authorization: Bearer $TOKEN"
+   # Or in the browser: DevTools → Application → Cookies → set aframp_session to $TOKEN
+   ```
+
+3. **The dashboard now handles the OTP step inline** — if `/login` returns a `challenge_id`, a code-entry form is shown automatically (see the updated `admin_dashboard.html`).
 
 ## Not available yet
 

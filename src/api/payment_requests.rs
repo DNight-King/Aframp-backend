@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
-use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
+use crate::models::{CreatePaymentRequestRequest, ListParams, PaymentRequest};
 use crate::pagination::{Cursor, Page};
 use crate::services::{payment_requests, wallets};
 use crate::AppState;
@@ -86,7 +86,7 @@ pub async fn list(
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,
@@ -105,12 +105,6 @@ pub async fn list(
             id: v.id,
         },
     )))
-}
-
-#[derive(serde::Deserialize)]
-pub struct ListParams {
-    pub limit: Option<i64>,
-    pub cursor: Option<String>,
 }
 
 /// A `pending` row whose expiry has passed is reported as `expired` at read
