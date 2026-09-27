@@ -5,7 +5,8 @@ use axum::Json;
 
 use crate::auth::{cookie, jwt};
 use crate::auth::jwt::Claims;
-use crate::error::{forbidden, ApiError, ErrorCode};
+use crate::error::{forbidden, internal, ApiError, ErrorCode};
+use crate::services::users;
 use crate::AppState;
 
 #[derive(Debug, Clone)]
@@ -26,7 +27,7 @@ impl FromRequestParts<AppState> for Session {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        authenticate(parts, state).map(Session)
+        authenticate_active(parts, state).await.map(Session)
     }
 }
 
@@ -51,6 +52,22 @@ fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, 
         .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })))
 }
 
+/// Verifies the token and that its account still exists and hasn't been
+/// deleted, so deleting an account revokes every token issued for it.
+async fn authenticate_active(
+    parts: &Parts,
+    state: &AppState,
+) -> Result<Claims, (StatusCode, Json<ApiError>)> {
+    let claims = authenticate(parts, state)?;
+    if !users::is_active(&state.db, claims.sub).await.map_err(internal)? {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None }),
+        ));
+    }
+    Ok(claims)
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = (StatusCode, Json<ApiError>);
 
@@ -58,7 +75,7 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let claims = authenticate(parts, state)?;
+        let claims = authenticate_active(parts, state).await?;
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,
@@ -73,7 +90,7 @@ impl FromRequestParts<AppState> for AdminUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let claims = authenticate(parts, state)?;
+        let claims = authenticate_active(parts, state).await?;
         if !claims.is_admin {
             return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
         }

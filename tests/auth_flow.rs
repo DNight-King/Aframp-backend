@@ -596,11 +596,11 @@ async fn me_requires_a_valid_token() {
 
 /// Signs a token with the integration-test secret, bypassing the app, so
 /// tests can present tokens the server would never issue itself.
-fn forge_token(iat: i64, exp: i64, orig_iat: i64) -> String {
+fn forge_token(sub: Uuid, iat: i64, exp: i64, orig_iat: i64) -> String {
     jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &json!({
-            "sub": Uuid::new_v4(),
+            "sub": sub,
             "merchant_id": null,
             "is_admin": false,
             "iat": iat,
@@ -652,7 +652,7 @@ async fn refresh_rejects_an_expired_token() {
         return;
     };
     let now = chrono::Utc::now().timestamp();
-    let expired = forge_token(now - 2 * 86_400, now - 86_400, now - 2 * 86_400);
+    let expired = forge_token(Uuid::new_v4(), now - 2 * 86_400, now - 86_400, now - 2 * 86_400);
 
     let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&expired), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -663,9 +663,13 @@ async fn refresh_stops_after_the_seven_day_session_window() {
     let Some(app) = app().await else {
         return;
     };
+    // Forge the token for a real, active account: tokens for unknown or
+    // deleted users are rejected before the session window is checked.
+    let (_, _, verified) = signup_and_verify(&app, "refresh_window").await;
+    let sub: Uuid = verified["user_id"].as_str().unwrap().parse().unwrap();
     let now = chrono::Utc::now().timestamp();
     // Still unexpired, but the session started eight days ago.
-    let stale = forge_token(now - 3_600, now + 3_600, now - 8 * 86_400);
+    let stale = forge_token(sub, now - 3_600, now + 3_600, now - 8 * 86_400);
 
     let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&stale), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

@@ -250,6 +250,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+    delete:
+      tags: [Auth]
+      summary: Delete the signed-in account (right to erasure)
+      description: >
+        Soft delete: email, name, phone number and password are erased in
+        place and pending OTP challenges removed; payments, payment requests,
+        withdrawals, wallets and balances are kept for the financial audit
+        trail. All tokens for the account stop working immediately.
+      responses:
+        '204':
+          description: Account deleted; session cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with Max-Age=0
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /wallet/create:
     post:

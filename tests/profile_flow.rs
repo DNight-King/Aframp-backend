@@ -107,3 +107,81 @@ async fn patch_me_refuses_a_phone_owned_by_another_account() {
     let (status, _) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({ "phone_number": taken }))).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let db = state.db.clone();
+    let app = aframp::router(state);
+    let (token, merchant_id) = ensure_merchant(&app, "profile_delete").await;
+    let (_, me) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    let user_id: Uuid = me["user_id"].as_str().unwrap().parse().unwrap();
+    let email = me["email"].as_str().unwrap().to_string();
+
+    // Financial records must survive the deletion.
+    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet}");
+    let (status, request) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "payment request failed: {request}");
+
+    let (status, _) = send(app.clone(), "DELETE", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Every outstanding token stops working, including for refresh.
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // PII is anonymized in place.
+    let (stored_email, name, phone, deleted): (String, String, Option<String>, bool) = sqlx::query_as(
+        "SELECT email, name, phone_number, deleted_at IS NOT NULL FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_ne!(stored_email, email);
+    assert!(stored_email.ends_with("@deleted.invalid"));
+    assert_eq!(name, "Deleted user");
+    assert!(phone.is_none());
+    assert!(deleted);
+
+    // The old credentials can't log back in.
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": "password123" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The payment request (financial audit trail) is still there.
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM payment_requests WHERE merchant_id = $1::uuid")
+        .bind(&merchant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1);
+}
+
+#[tokio::test]
+async fn delete_me_requires_authentication() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state);
+    let (status, _) = send(app.clone(), "DELETE", "/me", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

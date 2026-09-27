@@ -1,4 +1,6 @@
 use axum::extract::State;
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -193,4 +195,18 @@ pub async fn update(
         phone_number: user.phone_number,
         phone_verification,
     }))
+}
+
+/// Deletes the signed-in account (right to erasure). Personal data is
+/// anonymized rather than hard-deleted so the financial records keep a
+/// valid owner — see `users::anonymize_and_delete` and the data retention
+/// notes in API.md. Every token for the account stops working immediately
+/// and the session cookie is cleared.
+pub async fn delete(State(state): State<AppState>, auth: AuthUser) -> ApiResult<impl IntoResponse> {
+    if !users::anonymize_and_delete(&state.db, auth.user_id).await.map_err(internal)? {
+        return Err(not_found(ErrorCode::UserNotFound, "user not found"));
+    }
+    tracing::info!(user_id = %auth.user_id, "account deleted (personal data anonymized)");
+    let cookie = state.cookie.clear().map_err(internal)?;
+    Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
 }

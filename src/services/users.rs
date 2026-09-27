@@ -109,3 +109,56 @@ pub async fn merchant_by_id(db: &PgPool, merchant_id: uuid::Uuid) -> Result<Opti
     .fetch_optional(db)
     .await
 }
+
+/// Erases a user's personal data (GDPR / NDPA right to erasure) while
+/// keeping the rows that the financial records point at:
+///
+/// - email becomes `deleted-<user id>@deleted.invalid`, name and the
+///   merchant name become "Deleted user", the phone number is cleared
+/// - the password hash is blanked, so the account can never log in again
+/// - pending OTP challenges (which can hold PII) are removed
+/// - `deleted_at` is set, which makes every outstanding session token for
+///   this user fail authentication
+///
+/// Payments, payment requests, withdrawals, wallets and balances are left
+/// intact. Returns `false` if the user doesn't exist or was already deleted.
+pub async fn anonymize_and_delete(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let updated = sqlx::query(
+        "UPDATE users
+            SET email = 'deleted-' || id::text || '@deleted.invalid',
+                name = 'Deleted user',
+                phone_number = NULL,
+                phone_verified = false,
+                password_hash = '',
+                deleted_at = now(),
+                updated_at = now()
+          WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE merchants SET name = 'Deleted user' WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM otp_challenges WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Whether the account exists and hasn't been deleted.
+pub async fn is_active(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, bool>("SELECT deleted_at IS NULL FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or(false))
+}
