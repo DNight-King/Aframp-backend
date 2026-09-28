@@ -7,6 +7,29 @@ use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
+/// Default maximum request body size (1MB) used when `MAX_REQUEST_BODY_BYTES`
+/// is not set. This is a request body limit, not a response body limit.
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
+/// Resolve the request body limit from `MAX_REQUEST_BODY_BYTES`, falling back
+/// to [`DEFAULT_MAX_REQUEST_BODY_BYTES`] when unset or unparseable.
+fn max_request_body_bytes() -> usize {
+    match std::env::var("MAX_REQUEST_BODY_BYTES") {
+        Ok(value) => match value.trim().parse::<usize>() {
+            Ok(bytes) if bytes > 0 => bytes,
+            _ => {
+                tracing::warn!(
+                    value = %value,
+                    default = DEFAULT_MAX_REQUEST_BODY_BYTES,
+                    "invalid MAX_REQUEST_BODY_BYTES, using default"
+                );
+                DEFAULT_MAX_REQUEST_BODY_BYTES
+            }
+        },
+        Err(_) => DEFAULT_MAX_REQUEST_BODY_BYTES,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
@@ -36,6 +59,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tokio::spawn(listener);
 
+    // Background OTP cleanup: deletes challenges older than 24 hours past
+    // expiry every hour. Prevents unbounded growth of the otp_challenges table.
+    // See services::otp::cleanup_expired for the retention policy.
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                match aframp::services::otp::cleanup_expired(&db).await {
+                    Ok(n) => tracing::info!(deleted = n, "otp_challenges cleanup complete"),
+                    Err(e) => tracing::error!(error = %e, "otp_challenges cleanup failed"),
+                }
+            }
+        });
+    }
+
     // Auth travels as an HttpOnly cookie for browsers, so credentials are on —
     // which means origins must be listed explicitly, never mirrored back.
     let origins = config
@@ -56,12 +96,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_origin(origins)
         .allow_credentials(true)
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+
+    let max_request_body_bytes = max_request_body_bytes();
+    tracing::info!(max_request_body_bytes, "request body limit configured");
 
     let app = router((*state).clone())
         .layer(cors)
         .layer(TraceLayer::new_for_http())
-        .layer(RequestBodyLimitLayer::new(1024 * 1024));
+        .layer(RequestBodyLimitLayer::new(max_request_body_bytes));
 
     let address: SocketAddr = config.bind_addr.parse()?;
     tracing::info!(%address, "aframp started");

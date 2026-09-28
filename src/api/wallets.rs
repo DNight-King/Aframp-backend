@@ -2,9 +2,9 @@ use axum::extract::State;
 use axum::Json;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, internal, ApiResult, ErrorCode};
+use crate::error::{bad_request, conflict, internal, ApiResult, ErrorCode};
 use crate::models::{CreateWalletRequest, Wallet};
-use crate::services::wallets;
+use crate::services::wallets::{self, CreateWalletError};
 use crate::AppState;
 
 pub async fn create(
@@ -18,7 +18,13 @@ pub async fn create(
     let network = req.network.unwrap_or_else(|| "stellar".into());
     let wallet = wallets::create_wallet(&state.db, merchant_id, &network, &state.wallet_encryption_key)
         .await
-        .map_err(internal)?;
+        .map_err(|err| match err {
+            CreateWalletError::AlreadyExists => conflict(
+                ErrorCode::InvalidParameters,
+                "a wallet already exists for this merchant; use GET /wallet to retrieve it",
+            ),
+            other => internal(other),
+        })?;
     Ok(Json(wallet))
 }
 

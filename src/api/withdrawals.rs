@@ -1,13 +1,19 @@
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
+use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
+use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::auth::extractor::AuthUser;
+use crate::error::{bad_request, bad_request_field, internal, ApiResult, ErrorCode};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
 use crate::pagination::{Cursor, Page};
-use crate::services::withdrawals::{self, WithdrawalError};
+use crate::services::withdrawals;
 use crate::validation::{is_valid_account_number, is_valid_bank_code};
 use crate::AppState;
 
@@ -17,15 +23,76 @@ pub struct ListParams {
     pub cursor: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct VerifyBankParams {
+    pub bank_code: String,
+    pub account_number: String,
+}
+
+#[derive(Serialize)]
+pub struct VerifiedAccount {
+    pub account_name: String,
+    pub bank_code: String,
+    pub account_number: String,
+}
+
+/// Resolve a bank account (account number + bank code) to its registered
+/// account name before any withdrawal is attempted. This lets merchants
+/// confirm the recipient details up front instead of discovering a bad
+/// account only after a transfer has been attempted.
+pub async fn verify_bank(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Query(params): Query<VerifyBankParams>,
+) -> ApiResult<Json<VerifiedAccount>> {
+    if !is_valid_bank_code(&params.bank_code) {
+        return Err(bad_request_field("bank_code", "must be a 3-digit code"));
+    }
+    if !is_valid_account_number(&params.account_number) {
+        return Err(bad_request_field(
+            "account_number",
+            "must be a 10-digit NUBAN account number",
+        ));
+    }
+    let resolved = withdrawals::resolve_account(
+        state.payment_provider.as_ref(),
+        &params.bank_code,
+        &params.account_number,
+    )
+    .await
+    .map_err(map_withdrawal_error)?;
+    Ok(Json(VerifiedAccount {
+        account_name: resolved.account_name,
+        bank_code: params.bank_code,
+        account_number: params.account_number,
+    }))
+}
+
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
     headers: HeaderMap,
-    Json(req): Json<CreateWithdrawalRequest>,
+    Json(body): Json<Value>,
 ) -> ApiResult<Json<Withdrawal>> {
+    let req = CreateWithdrawalRequest::from_json(&body)
+        .map_err(|(field, msg)| bad_request_field(field, msg))?;
+
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+
+    // Refuse if the merchant is suspended.
+    let merchant = crate::services::users::merchant_by_id(&state.db, merchant_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "merchant not found"))?;
+    if merchant.is_suspended() {
+        return Err(crate::error::forbidden(
+            ErrorCode::Forbidden,
+            "this merchant account has been suspended",
+        ));
+    }
+
     if req.amount_stroops <= 0 {
         return Err(bad_request_field(
             "amount_stroops",
@@ -59,8 +126,7 @@ pub async fn create(
             idempotency_key,
         },
     )
-    .await
-    .map_err(map_withdrawal_error)?;
+    .await?;
     Ok(Json(withdrawal))
 }
 
@@ -72,7 +138,7 @@ pub async fn list(
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,
@@ -100,6 +166,9 @@ fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<c
             ErrorCode::InvalidAmount,
             "amount_stroops must be a whole number of kobo",
         ),
+        WithdrawalError::AccountResolutionFailed(msg) => {
+            bad_request(ErrorCode::AccountResolutionFailed, &msg)
+        }
         WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
         WithdrawalError::Database(e) => internal(e),
     }

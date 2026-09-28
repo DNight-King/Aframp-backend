@@ -1,8 +1,9 @@
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
-    AdminWalletRow, AdminWithdrawalRow, AssetTotal, StatusCount,
+    AdminWalletRow, AdminWithdrawalRow, AssetTotal, Merchant, StatusCount,
 };
 
 pub async fn overview(db: &PgPool) -> Result<AdminOverview, sqlx::Error> {
@@ -38,7 +39,9 @@ pub async fn overview(db: &PgPool) -> Result<AdminOverview, sqlx::Error> {
     .await?;
 
     let payment_requests_by_status = sqlx::query_as::<_, StatusCount>(
-        "SELECT status, count(*) FROM payment_requests GROUP BY status ORDER BY status",
+        "SELECT CASE WHEN status = 'pending' AND expires_at < now() THEN 'expired' ELSE status END AS status,
+                count(*)
+           FROM payment_requests GROUP BY 1 ORDER BY 1",
     )
     .fetch_all(db)
     .await?;
@@ -129,7 +132,9 @@ pub async fn withdrawals(db: &PgPool, limit: i64) -> Result<Vec<AdminWithdrawalR
 pub async fn payment_requests(db: &PgPool, limit: i64) -> Result<Vec<AdminPaymentRequestRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminPaymentRequestRow>(
         "SELECT pr.id, pr.merchant_id, m.name AS merchant_name, pr.amount_stroops, pr.asset,
-                pr.memo, pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at
+                pr.memo,
+                CASE WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired' ELSE pr.status END AS status,
+                pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at
          FROM payment_requests pr
          JOIN merchants m ON m.id = pr.merchant_id
          ORDER BY pr.created_at DESC
@@ -138,4 +143,38 @@ pub async fn payment_requests(db: &PgPool, limit: i64) -> Result<Vec<AdminPaymen
     .bind(limit)
     .fetch_all(db)
     .await
+}
+
+/// Suspend a merchant account. Returns the updated [`Merchant`] row, or
+/// `None` if no merchant with `merchant_id` exists.
+pub async fn suspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+    sqlx::query_as::<_, Merchant>(
+        "UPDATE merchants
+            SET suspended_at = now()
+          WHERE id = $1
+          RETURNING id, user_id, name, suspended_at, created_at",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Unsuspend (reinstate) a merchant account. Returns the updated [`Merchant`]
+/// row, or `None` if no merchant with `merchant_id` exists.
+pub async fn unsuspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+    sqlx::query_as::<_, Merchant>(
+        "UPDATE merchants
+            SET suspended_at = NULL
+          WHERE id = $1
+          RETURNING id, user_id, name, suspended_at, created_at",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Admin operation: clear a user's account lockout immediately.
+/// Returns `true` if the user was found and updated.
+pub async fn unlock_user(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    crate::services::users::admin_unlock(db, user_id).await
 }

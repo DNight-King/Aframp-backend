@@ -6,16 +6,16 @@ use uuid::Uuid;
 
 use common::{extract_otp_code, send, send_with_cookie, state};
 
-async fn app() -> Option<axum::Router> {
-    state().await.map(aframp::router)
+async fn app() -> axum::Router {
+    aframp::router(state().await)
 }
 
 /// Like `app()`, but also hands back a raw `PgPool` for tests that need to
 /// force an OTP challenge into a particular state (expired, stale) directly.
-async fn app_and_db() -> Option<(axum::Router, sqlx::PgPool)> {
-    let state = common::state().await?;
+async fn app_and_db() -> (axum::Router, sqlx::PgPool) {
+    let state = common::state().await;
     let db = state.db.clone();
-    Some((aframp::router(state), db))
+    (aframp::router(state), db)
 }
 
 /// A fresh, collision-free (email, local phone form, E.164 phone form) triple.
@@ -30,9 +30,7 @@ fn fresh_identity(seed: &str) -> (String, String, String) {
 
 #[tokio::test]
 async fn signup_then_verify_otp_issues_session() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("alice");
 
     let (status, challenge) = send(
@@ -66,9 +64,7 @@ async fn signup_then_verify_otp_issues_session() {
 
 #[tokio::test]
 async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, _) = fresh_identity("pending");
 
     let body = json!({ "email": email, "password": "password123", "name": "Pending", "phone_number": phone_number });
@@ -82,9 +78,7 @@ async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
 
 #[tokio::test]
 async fn signup_duplicate_email_conflicts_after_verification() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("dup");
     let body = json!({ "email": email, "password": "password123", "name": "Dup", "phone_number": phone_number });
 
@@ -117,9 +111,7 @@ async fn signup_duplicate_email_conflicts_after_verification() {
 
 #[tokio::test]
 async fn signup_weak_password_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (_, phone_number, _) = fresh_identity("weak");
     let (status, _) = send(
         app.clone(),
@@ -134,9 +126,7 @@ async fn signup_weak_password_rejected() {
 
 #[tokio::test]
 async fn signup_invalid_phone_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, _, _) = fresh_identity("badphone");
     let (status, body) = send(
         app.clone(),
@@ -176,9 +166,7 @@ async fn signup_and_verify(app: &axum::Router, seed: &str) -> (String, String, s
 
 #[tokio::test]
 async fn login_with_verified_phone_requires_otp() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, normalized_phone, _) = signup_and_verify(&app, "loginotp").await;
 
     let (status, challenge) = send(
@@ -208,9 +196,7 @@ async fn login_with_verified_phone_requires_otp() {
 
 #[tokio::test]
 async fn login_legacy_account_without_phone_skips_otp() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     // Simulate a pre-migration row: the API can no longer produce one, since
     // every signup now requires a phone.
     let email = format!("legacy+{}@example.com", Uuid::new_v4().simple());
@@ -248,9 +234,7 @@ fn aframp_password_hash_for_tests() -> String {
 
 #[tokio::test]
 async fn login_wrong_password_unauthorized() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, _, _) = signup_and_verify(&app, "wrongpw").await;
 
     let (status, _) = send(
@@ -266,9 +250,7 @@ async fn login_wrong_password_unauthorized() {
 
 #[tokio::test]
 async fn verify_otp_wrong_code_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, _) = fresh_identity("wrongcode");
     let (_, challenge) = send(
         app.clone(),
@@ -293,9 +275,7 @@ async fn verify_otp_wrong_code_rejected() {
 
 #[tokio::test]
 async fn verify_otp_unknown_challenge_404() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, body) = send(
         app.clone(),
         "POST",
@@ -310,9 +290,7 @@ async fn verify_otp_unknown_challenge_404() {
 
 #[tokio::test]
 async fn otp_attempts_exhausted_locks_challenge() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("locked");
     let (_, challenge) = send(
         app.clone(),
@@ -352,9 +330,7 @@ async fn otp_attempts_exhausted_locks_challenge() {
 
 #[tokio::test]
 async fn otp_expired_challenge_rejected() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("expired");
     let (_, challenge) = send(
         app.clone(),
@@ -387,9 +363,7 @@ async fn otp_expired_challenge_rejected() {
 
 #[tokio::test]
 async fn otp_resend_cooldown_429_within_60s() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, _) = fresh_identity("cooldown");
     let body = json!({ "email": email, "password": "password123", "name": "Cooldown", "phone_number": phone_number });
 
@@ -403,9 +377,7 @@ async fn otp_resend_cooldown_429_within_60s() {
 
 #[tokio::test]
 async fn otp_resend_after_cooldown_uses_new_code() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("refresh");
     let body = json!({ "email": email, "password": "password123", "name": "Refresh", "phone_number": phone_number });
 
@@ -452,9 +424,7 @@ async fn otp_resend_after_cooldown_uses_new_code() {
 
 #[tokio::test]
 async fn otp_rate_limit_429_after_five_in_an_hour() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("spam");
 
     // Seed 5 already-expired challenges for this phone directly — each still
@@ -488,9 +458,7 @@ async fn otp_rate_limit_429_after_five_in_an_hour() {
 
 #[tokio::test]
 async fn me_returns_profile_for_a_valid_token() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, _, verified) = signup_and_verify(&app, "me").await;
     let token = verified["token"].as_str().unwrap();
 
@@ -509,9 +477,7 @@ async fn me_returns_profile_for_a_valid_token() {
 
 #[tokio::test]
 async fn login_sets_an_http_only_session_cookie_that_authenticates() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, normalized_phone, _) = signup_and_verify(&app, "cookie").await;
 
     let (status, challenge) = send(
@@ -552,9 +518,7 @@ async fn login_sets_an_http_only_session_cookie_that_authenticates() {
 
 #[tokio::test]
 async fn logout_clears_the_session_cookie() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, _, cookies) =
         send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -568,9 +532,7 @@ async fn logout_clears_the_session_cookie() {
 
 #[tokio::test]
 async fn a_garbage_session_cookie_is_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, _, _) = send_with_cookie(
         app.clone(),
         "GET",
@@ -584,9 +546,7 @@ async fn a_garbage_session_cookie_is_rejected() {
 
 #[tokio::test]
 async fn me_requires_a_valid_token() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, _) = send(app.clone(), "GET", "/me", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
@@ -675,3 +635,138 @@ async fn refresh_stops_after_the_seven_day_session_window() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(body["error"].as_str().unwrap().contains("log in again"), "{body}");
 }
+#[tokio::test]
+async fn verified_signup_challenge_is_deleted() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let (email, phone_number, normalized_phone) = fresh_identity("challenge_gone");
+
+    let (status, challenge) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": "Gone", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
+    let challenge_id: uuid::Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+    let code = extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
+
+    let (status, verified) = send(
+        app.clone(),
+        "POST",
+        "/verify-otp",
+        None,
+        Some(json!({ "challenge_id": challenge_id, "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify-otp failed: {verified}");
+
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE id = $1")
+        .bind(challenge_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "the challenge (and its pending password hash) must be gone");
+
+    // The same code can't be replayed once the row is gone.
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        "/verify-otp",
+        None,
+        Some(json!({ "challenge_id": challenge_id, "code": code })),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let (email, phone_number, _) = fresh_identity("stale_purge");
+    let (status, challenge) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": "Stale", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
+    let stale_id: uuid::Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+
+    // Age the abandoned challenge past the 24h retention window.
+    sqlx::query(
+        "UPDATE otp_challenges
+            SET created_at = now() - interval '25 hours', expires_at = now() - interval '25 hours'
+          WHERE id = $1",
+    )
+    .bind(stale_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (other_email, other_phone, _) = fresh_identity("stale_purge_trigger");
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": other_email, "password": "password123", "name": "Trigger", "phone_number": other_phone })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE id = $1")
+        .bind(stale_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "a challenge expired over 24h ago must be hard-deleted");
+}
+
+#[tokio::test]
+async fn revoking_admin_takes_effect_on_the_next_request() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    // A legacy (no-phone) account logs in without OTP, which keeps this test
+    // focused on the admin check.
+    let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin', true)")
+        .bind(&email)
+        .bind(aframp_password_hash_for_tests())
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": "legacy-password-123" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    let token = body["token"].as_str().unwrap().to_string();
+
+    let (status, body) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "admin should have access: {body}");
+
+    sqlx::query("UPDATE users SET is_admin = false WHERE email = $1")
+        .bind(&email)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Same, still-unexpired token: rejected straight away.
+    let (status, _) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
