@@ -234,6 +234,10 @@ pub async fn list(
     )))
 }
 
+#[derive(serde::Deserialize)]
+pub struct ListParams {
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
 /// A `pending` row whose expiry has passed is reported as `expired` at read
 /// time, so a request going stale needs no background job to flip it.
 fn effective_status(status: crate::models::status::PaymentRequestStatus, expires_at: DateTime<Utc>) -> String {
@@ -253,6 +257,7 @@ fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestV
         amount_stroops: pr.amount_stroops,
         asset: pr.asset.clone(),
         memo: pr.memo.clone(),
+        status: pr.status.clone(),
         status: effective_status(pr.status, pr.expires_at),
         expires_at: pr.expires_at,
         created_at: pr.created_at,
@@ -269,6 +274,7 @@ fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentReque
         amount_stroops: row.amount_stroops,
         asset: row.asset.clone(),
         memo: row.memo.clone(),
+        status: row.status.clone(),
         status: effective_status(row.status, row.expires_at),
         expires_at: row.expires_at,
         created_at: row.created_at,
