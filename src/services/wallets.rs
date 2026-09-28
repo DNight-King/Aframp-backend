@@ -18,6 +18,44 @@ pub enum CreateWalletError {
     Database(#[from] sqlx::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum DecryptWalletError {
+    #[error("wallet not found")]
+    NotFound,
+    #[error("failed to decrypt wallet secret: {0}")]
+    Decryption(String),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Fetches the encrypted secret seed for `wallet_id` from the database and
+/// decrypts it using `key`.
+///
+/// This is intentionally separate from the public `Wallet` model, which never
+/// exposes the encrypted secret — keeping the secret out of the read path
+/// until it is explicitly needed.
+///
+/// # Usage
+/// Currently only needed for the settlement/sweep feature (signing outbound
+/// Stellar transactions on behalf of a merchant).  The `AppState` carries the
+/// key; see the TODO comment there.
+pub async fn decrypt_wallet_secret(
+    db: &PgPool,
+    wallet_id: Uuid,
+    key: &[u8; 32],
+) -> Result<String, DecryptWalletError> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT secret_key_encrypted FROM wallets WHERE id = $1",
+    )
+    .bind(wallet_id)
+    .fetch_optional(db)
+    .await?;
+
+    let (secret_key_encrypted,) = row.ok_or(DecryptWalletError::NotFound)?;
+    wallet_crypto::decrypt(key, &secret_key_encrypted)
+        .map_err(DecryptWalletError::Decryption)
+}
+
 pub async fn create_wallet(
     db: &PgPool,
     merchant_id: Uuid,
@@ -99,4 +137,51 @@ pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wall
     .bind(address)
     .fetch_optional(db)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blockchain::wallet_crypto;
+
+    /// Verifies that a secret encrypted with `wallet_crypto::encrypt` can be
+    /// recovered by `wallet_crypto::decrypt` using the same key — the exact
+    /// round-trip that `decrypt_wallet_secret` performs once the DB row is
+    /// fetched.
+    #[test]
+    fn encrypt_decrypt_round_trips() {
+        let key = [42u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ"; // fake Stellar seed
+
+        let encrypted = wallet_crypto::encrypt(&key, plaintext)
+            .expect("encryption should succeed");
+        let decrypted = wallet_crypto::decrypt(&key, &encrypted)
+            .expect("decryption should succeed");
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Nonces are random, so two encryptions of the same plaintext must
+    /// produce different ciphertext blobs.
+    #[test]
+    fn encrypt_is_nonce_randomised() {
+        let key = [7u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
+
+        let a = wallet_crypto::encrypt(&key, plaintext).unwrap();
+        let b = wallet_crypto::encrypt(&key, plaintext).unwrap();
+        assert_ne!(a, b, "each encryption should use a fresh random nonce");
+    }
+
+    /// Decryption must fail if the key is wrong.
+    #[test]
+    fn decrypt_rejects_wrong_key() {
+        let key_a = [1u8; 32];
+        let key_b = [2u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
+
+        let encrypted = wallet_crypto::encrypt(&key_a, plaintext).unwrap();
+        let result = wallet_crypto::decrypt(&key_b, &encrypted);
+        assert!(result.is_err(), "wrong key should fail to decrypt");
+    }
 }

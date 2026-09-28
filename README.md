@@ -56,7 +56,6 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 | TLS | The server speaks plain HTTP by design and must run behind a TLS-terminating reverse proxy. Deployed without one, passwords cross the network in cleartext and no amount of hashing helps — the attacker sees the password before it is hashed. See [Deploying behind TLS](#deploying-behind-tls) |
 | Login rate limiting | Nothing throttles password guessing against `/login` yet |
 | Token revocation | `POST /logout` clears the browser cookie, but a JWT already copied elsewhere stays valid for its full 24h. No revocation list, no refresh rotation |
-| `src/stellar/mod.rs` | Vestigial stub from an earlier, abandoned design (single system wallet + memo-based correlation). Not compiled into the binary's active module tree in any meaningful way, superseded by the per-wallet design in `src/blockchain/`. Left in place as known cleanup debt rather than silently deleted. |
 
 See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider choice, cNGN issuer sourcing, confirmation policy) and roadmap.
 
@@ -198,6 +197,7 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `POST` | `/payment-requests` | ✅ | Create a payment request for the authenticated merchant's wallet. Body: `{ amount_stroops, asset? (default XLM), expires_in_secs? (60–86400, default 900) }` |
 | `GET` | `/payment-requests?limit=` | ✅ | List the merchant's own requests, newest first (default 50, max 200) |
 | `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
+| `GET` | `/payment-requests/{id}/status` | — | Public lightweight poll — `{ status, paid_at? }` with `Cache-Control: public, max-age=5`. Prefer this after the customer has submitted payment |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
@@ -216,6 +216,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 
 Local dev never needs a real Termii account: set `OTP_PROVIDER=mock` (see `.env.example`) and the code is logged via `tracing::info!` instead of sent, so you can read it straight out of `cargo run`'s stdout.
 
+OTP / Termii credential handling (API key in request body, HTTPS-only send URL, Token API notes) is documented in [docs/SECURITY.md](docs/SECURITY.md).
+
 ### Admin access
 
 There's no self-service way to become an admin — flag a user directly in Postgres:
@@ -224,7 +226,7 @@ There's no self-service way to become an admin — flag a user directly in Postg
 UPDATE users SET is_admin = true WHERE email = 'you@example.com';
 ```
 
-The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
+The `is_admin` flag is also baked into the JWT at login, so **re-login after granting it**. Revoking it takes effect immediately: every admin request re-checks `users.is_admin` in the database, so an outstanding token stops working for `/admin/*` on its next request even though it hasn't expired. Then open `/admin` in a browser and sign in with that account.
 
 ### Termii webhook
 
@@ -272,7 +274,6 @@ src/
   models/      Request/response and row types
   services/    Business logic (users, wallets, balances, payments, payment_requests, withdrawals)
   payments/    PaymentProvider abstraction — real PaystackProvider + a MockProvider for tests
-  stellar/     Vestigial unused stub from an earlier design — see Status
 migrations/    SQL schema migrations (sqlx)
 tests/         Integration tests (auth, wallet, payment request, withdrawal flows)
 examples/      prove_payment_loop.rs — end-to-end demo harness (real testnet payment)
@@ -284,6 +285,19 @@ command.txt    Copy-paste command reference for running/testing/interacting with
 ## Why Nigeria first
 
 Nigeria has a large digital-payments ecosystem and near-universal familiarity with POS and bank-transfer payments — the exact behavior Aframp is extending rather than replacing. The plan is to prove the merchant payment experience narrowly here, then expand to other African markets and cross-border corridors.
+
+## Architecture Decision Records
+
+The `docs/adr/` directory documents the reasoning behind key design choices —
+not just what was built, but why, and what was ruled out. Read these before
+making changes that touch the areas they cover.
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-001](docs/adr/ADR-001-custodial-wallet-design.md) | Per-merchant custodial wallets (vs. single system wallet + memo correlation) |
+| [ADR-002](docs/adr/ADR-002-otp-gated-signup.md) | Phone OTP gates account creation, not just session issuance; full 2FA on login |
+| [ADR-003](docs/adr/ADR-003-hmac-otp-storage.md) | HMAC-SHA256 for OTP codes (not bcrypt/Argon2 — 6-digit space makes KDFs useless) |
+| [ADR-004](docs/adr/ADR-004-commit-before-paystack.md) | Commit withdrawal record before calling Paystack; compensate on failure |
 
 ## Contributing
 
