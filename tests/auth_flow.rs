@@ -6,16 +6,16 @@ use uuid::Uuid;
 
 use common::{extract_otp_code, send, send_with_cookie, state};
 
-async fn app() -> Option<axum::Router> {
-    state().await.map(aframp::router)
+async fn app() -> axum::Router {
+    aframp::router(state().await)
 }
 
 /// Like `app()`, but also hands back a raw `PgPool` for tests that need to
 /// force an OTP challenge into a particular state (expired, stale) directly.
-async fn app_and_db() -> Option<(axum::Router, sqlx::PgPool)> {
-    let state = common::state().await?;
+async fn app_and_db() -> (axum::Router, sqlx::PgPool) {
+    let state = common::state().await;
     let db = state.db.clone();
-    Some((aframp::router(state), db))
+    (aframp::router(state), db)
 }
 
 /// A fresh, collision-free (email, local phone form, E.164 phone form) triple.
@@ -30,9 +30,7 @@ fn fresh_identity(seed: &str) -> (String, String, String) {
 
 #[tokio::test]
 async fn signup_then_verify_otp_issues_session() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("alice");
 
     let (status, challenge) = send(
@@ -66,9 +64,7 @@ async fn signup_then_verify_otp_issues_session() {
 
 #[tokio::test]
 async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, _) = fresh_identity("pending");
 
     let body = json!({ "email": email, "password": "password123", "name": "Pending", "phone_number": phone_number });
@@ -82,9 +78,7 @@ async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
 
 #[tokio::test]
 async fn signup_duplicate_email_conflicts_after_verification() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("dup");
     let body = json!({ "email": email, "password": "password123", "name": "Dup", "phone_number": phone_number });
 
@@ -117,9 +111,7 @@ async fn signup_duplicate_email_conflicts_after_verification() {
 
 #[tokio::test]
 async fn signup_weak_password_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (_, phone_number, _) = fresh_identity("weak");
     let (status, _) = send(
         app.clone(),
@@ -134,9 +126,7 @@ async fn signup_weak_password_rejected() {
 
 #[tokio::test]
 async fn signup_invalid_phone_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, _, _) = fresh_identity("badphone");
     let (status, body) = send(
         app.clone(),
@@ -176,9 +166,7 @@ async fn signup_and_verify(app: &axum::Router, seed: &str) -> (String, String, s
 
 #[tokio::test]
 async fn login_with_verified_phone_requires_otp() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, normalized_phone, _) = signup_and_verify(&app, "loginotp").await;
 
     let (status, challenge) = send(
@@ -208,9 +196,7 @@ async fn login_with_verified_phone_requires_otp() {
 
 #[tokio::test]
 async fn login_legacy_account_without_phone_skips_otp() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     // Simulate a pre-migration row: the API can no longer produce one, since
     // every signup now requires a phone.
     let email = format!("legacy+{}@example.com", Uuid::new_v4().simple());
@@ -248,9 +234,7 @@ fn aframp_password_hash_for_tests() -> String {
 
 #[tokio::test]
 async fn login_wrong_password_unauthorized() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, _, _) = signup_and_verify(&app, "wrongpw").await;
 
     let (status, _) = send(
@@ -266,9 +250,7 @@ async fn login_wrong_password_unauthorized() {
 
 #[tokio::test]
 async fn verify_otp_wrong_code_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, _) = fresh_identity("wrongcode");
     let (_, challenge) = send(
         app.clone(),
@@ -293,9 +275,7 @@ async fn verify_otp_wrong_code_rejected() {
 
 #[tokio::test]
 async fn verify_otp_unknown_challenge_404() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, body) = send(
         app.clone(),
         "POST",
@@ -310,9 +290,7 @@ async fn verify_otp_unknown_challenge_404() {
 
 #[tokio::test]
 async fn otp_attempts_exhausted_locks_challenge() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("locked");
     let (_, challenge) = send(
         app.clone(),
@@ -352,9 +330,7 @@ async fn otp_attempts_exhausted_locks_challenge() {
 
 #[tokio::test]
 async fn otp_expired_challenge_rejected() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("expired");
     let (_, challenge) = send(
         app.clone(),
@@ -387,9 +363,7 @@ async fn otp_expired_challenge_rejected() {
 
 #[tokio::test]
 async fn otp_resend_cooldown_429_within_60s() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, phone_number, _) = fresh_identity("cooldown");
     let body = json!({ "email": email, "password": "password123", "name": "Cooldown", "phone_number": phone_number });
 
@@ -403,9 +377,7 @@ async fn otp_resend_cooldown_429_within_60s() {
 
 #[tokio::test]
 async fn otp_resend_after_cooldown_uses_new_code() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("refresh");
     let body = json!({ "email": email, "password": "password123", "name": "Refresh", "phone_number": phone_number });
 
@@ -452,9 +424,7 @@ async fn otp_resend_after_cooldown_uses_new_code() {
 
 #[tokio::test]
 async fn otp_rate_limit_429_after_five_in_an_hour() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("spam");
 
     // Seed 5 already-expired challenges for this phone directly — each still
@@ -488,9 +458,7 @@ async fn otp_rate_limit_429_after_five_in_an_hour() {
 
 #[tokio::test]
 async fn me_returns_profile_for_a_valid_token() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, _, verified) = signup_and_verify(&app, "me").await;
     let token = verified["token"].as_str().unwrap();
 
@@ -509,9 +477,7 @@ async fn me_returns_profile_for_a_valid_token() {
 
 #[tokio::test]
 async fn login_sets_an_http_only_session_cookie_that_authenticates() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (email, normalized_phone, _) = signup_and_verify(&app, "cookie").await;
 
     let (status, challenge) = send(
@@ -552,9 +518,7 @@ async fn login_sets_an_http_only_session_cookie_that_authenticates() {
 
 #[tokio::test]
 async fn logout_clears_the_session_cookie() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, _, cookies) =
         send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -568,9 +532,7 @@ async fn logout_clears_the_session_cookie() {
 
 #[tokio::test]
 async fn a_garbage_session_cookie_is_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, _, _) = send_with_cookie(
         app.clone(),
         "GET",
@@ -584,9 +546,7 @@ async fn a_garbage_session_cookie_is_rejected() {
 
 #[tokio::test]
 async fn me_requires_a_valid_token() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let (status, _) = send(app.clone(), "GET", "/me", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 

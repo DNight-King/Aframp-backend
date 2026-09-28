@@ -54,9 +54,7 @@ impl PaymentProvider for TimeoutProvider {
 
 #[tokio::test]
 async fn withdrawal_insufficient_balance_rejected() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "insufficient").await;
 
@@ -79,9 +77,7 @@ async fn withdrawal_insufficient_balance_rejected() {
 
 #[tokio::test]
 async fn withdrawal_validates_bank_details() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "validation").await;
 
@@ -102,9 +98,7 @@ async fn withdrawal_validates_bank_details() {
 
 #[tokio::test]
 async fn withdrawal_success_decrements_balance() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "withdraw_ok").await;
 
@@ -151,9 +145,7 @@ async fn withdrawal_success_decrements_balance() {
 
 #[tokio::test]
 async fn withdrawal_full_balance_then_insufficient() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "drain").await;
 
@@ -197,9 +189,7 @@ async fn withdrawal_full_balance_then_insufficient() {
 
 #[tokio::test]
 async fn withdrawal_unsupported_asset_rejected() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "unsupported_asset").await;
 
@@ -231,9 +221,7 @@ async fn withdrawal_unsupported_asset_rejected() {
 
 #[tokio::test]
 async fn withdrawal_rejects_sub_kobo_precision() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "precision").await;
 
@@ -267,9 +255,7 @@ async fn withdrawal_rejects_sub_kobo_precision() {
 
 #[tokio::test]
 async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     // Swap in a provider that always fails, to exercise the compensating
     // refund + audit-trail path without needing a real Paystack failure.
     state.payment_provider = Arc::new(FailingProvider);
@@ -320,9 +306,7 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
 
 #[tokio::test]
 async fn withdrawal_insufficient_balance_never_calls_provider() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     // A MockProvider always succeeds, so if this withdrawal were rejected
     // for any reason other than the balance check, this test would see a
     // 200 instead of the expected 400 — this isolates the balance check as
@@ -350,9 +334,7 @@ async fn withdrawal_insufficient_balance_never_calls_provider() {
 
 #[tokio::test]
 async fn withdrawal_invalid_bank_code_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(InvalidBankCodeProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "invalid_bank_code").await;
@@ -400,9 +382,7 @@ async fn withdrawal_invalid_bank_code_refunds_balance_and_records_reason() {
 
 #[tokio::test]
 async fn withdrawal_invalid_account_number_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(InvalidAccountNumberProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "invalid_account_number").await;
@@ -450,9 +430,7 @@ async fn withdrawal_invalid_account_number_refunds_balance_and_records_reason() 
 
 #[tokio::test]
 async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(TimeoutProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "paystack_timeout").await;
