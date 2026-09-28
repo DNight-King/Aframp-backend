@@ -8,6 +8,12 @@ use crate::models::{NewWallet, Wallet};
 pub enum CreateWalletError {
     #[error("failed to encrypt wallet secret: {0}")]
     Encryption(String),
+    /// The merchant already has a wallet — the `wallets_merchant_id_unique`
+    /// constraint rejected the INSERT.  The API layer maps this to 409 Conflict
+    /// rather than a 500, so the client can tell the merchant to use their
+    /// existing wallet instead of retrying.
+    #[error("a wallet already exists for this merchant")]
+    AlreadyExists,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -77,7 +83,18 @@ pub async fn create_wallet(
     .bind(&wallet.secret_key_encrypted)
     .fetch_one(db)
     .await
-    .map_err(CreateWalletError::from)
+    .map_err(|err| {
+        // Postgres error code 23505 = unique_violation.  The
+        // `wallets_merchant_id_unique` constraint means the merchant already
+        // has a wallet; surface this as a distinct variant so the handler can
+        // return 409 instead of 500.
+        if let sqlx::Error::Database(ref db_err) = err {
+            if db_err.code().as_deref() == Some("23505") {
+                return CreateWalletError::AlreadyExists;
+            }
+        }
+        CreateWalletError::Database(err)
+    })
 }
 
 pub async fn wallet_by_merchant(

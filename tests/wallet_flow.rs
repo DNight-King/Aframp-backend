@@ -87,3 +87,58 @@ async fn wallet_address_is_stable_per_merchant() {
     let (_, json_b) = send(app.clone(), "GET", "/wallet", Some(&token_b), None).await;
     assert_ne!(json_a["address"], json_b["address"]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1042 — duplicate wallet prevention: second POST /wallet/create must fail
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// POST /wallet/create is intentionally limited to one wallet per merchant.
+///
+/// The `wallets_merchant_id_unique` constraint (migration 0009) enforces this
+/// at the database level.  A second call must return 409 Conflict rather than
+/// silently creating a second wallet that would be unreachable (the service
+/// returns the *newest* by `created_at DESC`, effectively orphaning the first
+/// and any funds held in it).
+#[tokio::test]
+async fn second_wallet_create_returns_409() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let (token, _) = ensure_merchant(&app, "dup_wallet").await;
+
+    // First call succeeds and returns the new wallet.
+    let (status, first) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first create should succeed: {first}");
+    let first_address = first["address"].as_str().unwrap().to_string();
+    assert!(!first_address.is_empty());
+
+    // Second call for the same merchant must be rejected.
+    let (status, second) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "second create should return 409: {second}"
+    );
+
+    // The existing wallet is unchanged — GET /wallet still returns the original.
+    let (status, fetched) = send(app.clone(), "GET", "/wallet", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "get wallet failed: {fetched}");
+    assert_eq!(
+        fetched["address"], first_address,
+        "existing wallet address must be preserved after a rejected duplicate create"
+    );
+}
