@@ -773,7 +773,12 @@ components:
         merchant_id: { type: string, format: uuid }
         address: { type: string, description: Stellar destination address to pay. }
         network: { type: string, example: stellar }
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "Amount in stroops (1 XLM = 10,000,000 stroops). Convert for display: stroops / 10_000_000."
+          example: 25000000
         asset: { type: string, example: XLM }
         memo:
           type: string
@@ -818,11 +823,18 @@ components:
       properties:
         merchant_id: { type: string, format: uuid }
         asset: { type: string, example: XLM }
-        available: { type: integer, format: int64, description: Withdrawable, in stroops. }
+        available:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Withdrawable balance in stroops (1 XLM = 10,000,000 stroops)."
+          example: 100000000000
         pending:
           type: integer
           format: int64
-          description: Detected but unconfirmed. Almost always 0 — no confirmation-depth threshold yet.
+          minimum: 0
+          description: "Detected but unconfirmed, in stroops. Almost always 0 — no confirmation-depth threshold yet."
+          example: 0
         updated_at: { type: string, format: date-time }
 
     Payment:
@@ -836,7 +848,12 @@ components:
         tx_hash:
           type: string
           description: Real Stellar transaction hash; linkable to a block explorer.
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "Amount received in stroops (1 XLM = 10,000,000 stroops)."
+          example: 25000000
         asset: { type: string }
         network: { type: string, example: stellar }
         status: { type: string, enum: [detected, verified, confirmed, failed] }
@@ -875,7 +892,12 @@ components:
       properties:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "Amount withdrawn in stroops (1 XLM = 10,000,000 stroops)."
+          example: 500000000
         asset: { type: string, example: cNGN }
         status: { type: string, enum: [pending, processing, completed, failed] }
         provider: { type: string, nullable: true, example: paystack }

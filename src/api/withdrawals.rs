@@ -1,6 +1,10 @@
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
+
+use crate::auth::extractor::AuthUser;
+use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
+use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
 use serde::{Deserialize, Serialize};
 use serde::Deserialize;
 use serde_json::Value;
@@ -134,7 +138,7 @@ pub async fn list(
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,
